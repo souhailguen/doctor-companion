@@ -168,6 +168,9 @@ class SecretaryAgent:
     def greeting(self) -> str:
         return f"{self.settings.clinic_name}، السلام عليكم. كيف يمكنني مساعدتك؟"
 
+    def goodbye(self) -> str:
+        return "شكراً لاتصالك. مع السلامة."
+
     def start(self, channel: str, caller_phone: str | None = None) -> Conversation:
         # In-memory store for the MVP: drop conversations past their TTL.
         cutoff = time.monotonic() - CONVERSATION_TTL_SECONDS
@@ -225,23 +228,25 @@ class SecretaryAgent:
         return await self.client.beta.messages.create(**kwargs)
 
     async def _run(self, conv: Conversation) -> AgentReply:
-        end_call = False
+        spoken = []  # text said during this turn, across tool rounds
         for _ in range(MAX_TOOL_ROUNDS):
             response = await self._create(conv.messages)
             # Append the full content unchanged (thinking blocks included) so the
             # history stays append-only.
             conv.messages.append({"role": "assistant", "content": response.content})
             text = " ".join(b.text for b in response.content if b.type == "text").strip()
+            if text:
+                spoken.append(text)
 
             if response.stop_reason == "refusal":
                 return AgentReply(text or FALLBACK_REPLY)
             if response.stop_reason == "pause_turn":
                 continue
             if response.stop_reason != "tool_use":
-                conv.ended = conv.ended or end_call
-                return AgentReply(text or FALLBACK_REPLY, end_call=end_call)
+                # Prefer the final answer; fall back to what was said before tool calls.
+                return AgentReply(text or " ".join(spoken) or FALLBACK_REPLY)
 
-            results = []
+            results, end_call = [], False
             for block in response.content:
                 if block.type != "tool_use":
                     continue
@@ -257,8 +262,12 @@ class SecretaryAgent:
                     }
                 )
             conv.messages.append({"role": "user", "content": results})
+            if end_call:
+                # The goodbye was said alongside end_call; hang up without another model call.
+                conv.ended = True
+                return AgentReply(" ".join(spoken) or self.goodbye(), end_call=True)
         log.warning("Conversation %s exceeded %d tool rounds", conv.id, MAX_TOOL_ROUNDS)
-        return AgentReply(FALLBACK_REPLY, end_call=end_call)
+        return AgentReply(FALLBACK_REPLY)
 
     # ---- tools --------------------------------------------------------
 

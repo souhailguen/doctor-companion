@@ -74,14 +74,14 @@ async def test_tool_errors_are_reported_to_model(make_agent, scheduler):
     assert result["is_error"] is True and "محجوز" in result["content"]
 
 
-async def test_end_call(make_agent):
-    agent = make_agent([
-        ([text("مع السلامة."), tool("t1", "end_call", {})], "tool_use"),
-        ([text("")], "end_turn"),
-    ])
+async def test_end_call_keeps_goodbye_and_stops(make_agent):
+    agent = make_agent([([text("مع السلامة."), tool("t1", "end_call", {})], "tool_use")])
     conv = agent.start("phone")
     reply = await agent.reply(conv, "شكراً، مع السلامة")
     assert reply.end_call and conv.ended
+    assert reply.text == "مع السلامة."
+    assert len(agent.client.requests) == 1  # no extra model call after hanging up
+    assert conv.messages[-1]["content"][0]["tool_use_id"] == "t1"  # history stays well-formed
 
 
 def test_voice_gateway_endpoints(settings, scheduler, make_agent):
