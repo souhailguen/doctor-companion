@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>حجز موعد</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1 id="clinic-name">حجز موعد</h1>
+  <p id="doctor-name" class="muted"></p>
+  <nav><a href="/call">📞 تجربة المساعد الهاتفي</a></nav>
+</header>
+
+<main>
+  <section class="card">
+    <div class="week-nav">
+      <button id="prev" aria-label="الأسبوع السابق">→</button>
+      <h2 id="week-label"></h2>
+      <button id="next" aria-label="الأسبوع التالي">←</button>
+    </div>
+    <div id="calendar" class="calendar"></div>
+  </section>
+
+  <section class="card">
+    <h2>مواعيدي</h2>
+    <form id="lookup-form" class="row">
+      <input id="lookup-phone" type="tel" placeholder="رقم الهاتف" required>
+      <button type="submit">بحث</button>
+    </form>
+    <ul id="my-appointments" class="list"></ul>
+  </section>
+</main>
+
+<dialog id="book-dialog">
+  <form id="book-form" method="dialog">
+    <h2>تأكيد الحجز</h2>
+    <p id="slot-label" class="highlight"></p>
+    <label>الاسم الكامل <input name="patient_name" required minlength="2"></label>
+    <label>رقم الهاتف <input name="phone" type="tel" required minlength="6"></label>
+    <label>سبب الزيارة <input name="reason" maxlength="300"></label>
+    <p id="book-error" class="error"></p>
+    <div class="row">
+      <button type="submit" class="primary">احجز</button>
+      <button type="button" id="cancel-dialog">إلغاء</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status"></div>
+
+<script>
+const DAY_FMT = new Intl.DateTimeFormat('ar', {weekday: 'long', day: 'numeric', month: 'long'});
+const LONG_FMT = new Intl.DateTimeFormat('ar', {weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit'});
+let today, weekStart, selectedStart;
+
+const $ = (id) => document.getElementById(id);
+const parseLocal = (s) => { const [d, t = '00:00'] = s.split('T'); const [y, m, dd] = d.split('-').map(Number); const [h, mi] = t.split(':').map(Number); return new Date(y, m - 1, dd, h, mi); };
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 4000); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...opts});
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'تعذر إتمام الطلب');
+  return body;
+}
+
+async function loadWeek() {
+  $('week-label').textContent = `${DAY_FMT.format(weekStart)} — ${DAY_FMT.format(addDays(weekStart, 6))}`;
+  $('prev').disabled = weekStart <= today;
+  const days = await api(`/api/availability?start=${iso(weekStart)}&days=7`);
+  const cal = $('calendar');
+  cal.innerHTML = '';
+  for (const day of days) {
+    const col = document.createElement('div');
+    col.className = 'day';
+    const h = document.createElement('h3');
+    h.textContent = DAY_FMT.format(parseLocal(day.date));
+    col.appendChild(h);
+    if (!day.slots.length) {
+      const p = document.createElement('p'); p.className = 'muted'; p.textContent = 'لا توجد مواعيد'; col.appendChild(p);
+    }
+    for (const time of day.slots) {
+      const b = document.createElement('button');
+      b.className = 'slot'; b.textContent = time;
+      b.onclick = () => openBooking(`${day.date}T${time}`);
+      col.appendChild(b);
+    }
+    cal.appendChild(col);
+  }
+}
+
+function openBooking(start) {
+  selectedStart = start;
+  $('slot-label').textContent = LONG_FMT.format(parseLocal(start));
+  $('book-error').textContent = '';
+  $('book-dialog').showModal();
+}
+
+$('cancel-dialog').onclick = () => $('book-dialog').close();
+
+$('book-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  try {
+    await api('/api/appointments', {method: 'POST', body: JSON.stringify({...data, start: selectedStart})});
+    $('book-dialog').close();
+    e.target.reset();
+    toast(`تم الحجز: ${LONG_FMT.format(parseLocal(selectedStart))}`);
+    loadWeek();
+  } catch (err) {
+    $('book-error').textContent = err.message;
+    loadWeek();
+  }
+};
+
+$('lookup-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const phone = $('lookup-phone').value;
+  const list = $('my-appointments');
+  list.innerHTML = '';
+  try {
+    const appts = await api(`/api/appointments?phone=${encodeURIComponent(phone)}`);
+    if (!appts.length) list.innerHTML = '<li class="muted">لا توجد مواعيد قادمة</li>';
+    for (const a of appts) {
+      const li = document.createElement('li');
+      li.textContent = LONG_FMT.format(parseLocal(a.start)) + ' ';
+      const b = document.createElement('button');
+      b.textContent = 'إلغاء الموعد';
+      b.onclick = async () => {
+        if (!confirm('هل تريد إلغاء هذا الموعد؟')) return;
+        await api(`/api/appointments/${a.id}/cancel`, {method: 'POST', body: JSON.stringify({phone})});
+        toast('تم إلغاء الموعد'); li.remove(); loadWeek();
+      };
+      li.appendChild(b);
+      list.appendChild(li);
+    }
+  } catch (err) { toast(err.message); }
+};
+
+$('prev').onclick = () => { weekStart = addDays(weekStart, -7); if (weekStart < today) weekStart = today; loadWeek(); };
+$('next').onclick = () => { weekStart = addDays(weekStart, 7); loadWeek(); };
+
+(async () => {
+  const cfg = await api('/api/config');
+  document.title = `حجز موعد — ${cfg.clinic_name}`;
+  $('clinic-name').textContent = cfg.clinic_name;
+  $('doctor-name').textContent = cfg.doctor_name;
+  today = parseLocal(cfg.today);
+  weekStart = today;
+  loadWeek();
+})();
+</script>
+</body>
+</html>

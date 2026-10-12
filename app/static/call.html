@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>محاكي المكالمات</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>محاكي المكالمات الهاتفية</h1>
+  <p class="muted">يحاكي مكالمة واردة إلى السكرتيرة الذكية. يستعمل نفس واجهة البوابة الصوتية التي سيستعملها مزود الهاتف.</p>
+  <nav><a href="/">📅 صفحة الحجز</a></nav>
+</header>
+
+<main>
+  <section class="card">
+    <div class="row">
+      <input id="caller" type="tel" placeholder="رقم المتصل (مثال: 0612345678)" value="0612345678">
+      <select id="lang" aria-label="لهجة التعرف على الكلام">
+        <option value="ar-MA">العربية (المغرب)</option>
+        <option value="ar-SA">العربية (السعودية)</option>
+        <option value="ar-EG">العربية (مصر)</option>
+      </select>
+      <button id="call-btn" class="primary">📞 اتصال</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div id="transcript" class="transcript"></div>
+    <form id="say-form" class="row">
+      <button type="button" id="mic" disabled title="تحدث">🎤</button>
+      <input id="say" placeholder="أو اكتب ما يقوله المتصل…" disabled>
+      <button type="submit" id="send" disabled>إرسال</button>
+    </form>
+    <p id="status" class="muted"></p>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let callId = null;
+
+function line(who, text) {
+  const p = document.createElement('p');
+  p.className = who; p.textContent = text;
+  $('transcript').appendChild(p);
+  p.scrollIntoView({block: 'end'});
+}
+
+function speak(text) {
+  return new Promise((resolve) => {
+    if (!('speechSynthesis' in window)) return resolve();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = $('lang').value;
+    u.onend = u.onerror = resolve;
+    speechSynthesis.speak(u);
+  });
+}
+
+function setInCall(on) {
+  $('say').disabled = $('send').disabled = !on;
+  $('mic').disabled = !on || !Recognition;
+  $('call-btn').textContent = on ? '⏹ إنهاء' : '📞 اتصال';
+}
+
+async function post(path, body) {
+  const res = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+async function handle(reply) {
+  line('agent', reply.reply);
+  await speak(reply.reply);
+  if (reply.end_call) { line('system', 'انتهت المكالمة'); callId = null; setInCall(false); }
+}
+
+$('call-btn').onclick = async () => {
+  if (callId) { callId = null; setInCall(false); line('system', 'أنهى المتصل المكالمة'); return; }
+  $('transcript').innerHTML = '';
+  const r = await post('/voice/calls', {caller_phone: $('caller').value || null});
+  callId = r.call_id;
+  setInCall(true);
+  await handle(r);
+};
+
+async function send(text) {
+  if (!callId || !text.trim()) return;
+  line('caller', text);
+  $('status').textContent = '…';
+  try { await handle(await post(`/voice/calls/${callId}/turn`, {text})); }
+  catch (e) { line('system', 'خطأ: ' + e.message); }
+  finally { $('status').textContent = ''; }
+}
+
+$('say-form').onsubmit = (e) => { e.preventDefault(); send($('say').value); $('say').value = ''; };
+
+$('mic').onclick = () => {
+  const rec = new Recognition();
+  rec.lang = $('lang').value;
+  rec.interimResults = false;
+  rec.onresult = (e) => send(e.results[0][0].transcript);
+  rec.onstart = () => { $('status').textContent = '🎙️ أستمع…'; };
+  rec.onend = () => { if ($('status').textContent.startsWith('🎙️')) $('status').textContent = ''; };
+  rec.start();
+};
+
+if (!Recognition) $('status').textContent = 'التعرف على الكلام غير مدعوم في هذا المتصفح (استعمل Chrome)، يمكنك الكتابة بدلاً من ذلك.';
+</script>
+</body>
+</html>
